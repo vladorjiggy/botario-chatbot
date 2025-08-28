@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chatbot Testinstanz</title>
+  
+</head>
+
+<body>
+  <div id="widget-container"></div>
+  <script>
+    function getUrlParameter(name) {
+      const urlParams = new URLSearchParams(window.location.search);
+      return urlParams.get(name);
+    }
+
+    function saveJwtToStorage(jwt) {
+      localStorage.setItem('botario_jwt_token', jwt);
+    }
+
+    function getJwtFromStorage() {
+      return localStorage.getItem('botario_jwt_token');
+    }
+
+    function isJwtValid(jwt) {
+      try {
+        const payload = JSON.parse(atob(jwt.split('.')[1]));
+        const currentTime = Math.floor(Date.now() / 1000);
+        return payload.exp && payload.exp > currentTime;
+      } catch (error) {
+        console.error('JWT validation error:', error);
+        return false;
+      }
+    }
+
+    function loadZendeskWidget(jwt) {
+      const script = document.createElement('script');
+      script.id = 'ze-snippet';
+      script.src = 'https://static.zdassets.com/ekr/snippet.js?key=d69d4b53-fb8e-47f8-ab05-8bc2c15c0154';
+      document.head.appendChild(script);
+
+      script.onload = function () {
+        zE("messenger", "loginUser",
+          function jwtCallback(callback) {
+            callback(jwt);
+            zE('messenger', 'open');
+          },
+          function loginCallback(error) {
+            if (error) {
+              const { type, reason, message } = error;
+              console.error(`Login failed: ${type} - ${reason} - ${message}`);
+              console.log('Switching to Botario Widget due to login error');
+              loadBotarioWidget();
+            }
+          }
+        );
+      };
+
+      script.onerror = function () {
+        console.error('Failed to load Zendesk Widget script');
+        console.log('Switching to Botario Widget due to script loading error');
+        loadBotarioWidget();
+      };
+    }
+
+    function loadBotarioWidget() {
+      const container = document.getElementById('widget-container');
+      container.innerHTML = '<botario-chat bot-id="6874c83a2682cf09c37fbe9d" api-url="https://gpt.avm.botario.com/static/chat-client/"></botario-chat>';
+
+      // Style Script für Shadow DOM laden
+      const styleScript = document.createElement('script');
+      styleScript.src = './styleWidget.js';
+      document.head.appendChild(styleScript);
+      
+      const script = document.createElement('script');
+      script.type = 'module';
+      script.src = 'https://gpt.avm.botario.com/static/chat-widget/chat-widget.js';
+      document.head.appendChild(script);
+
+      
+    }
+
+    function initializeWidget() {
+      const jwtFromUrl = getUrlParameter('jwt');
+
+      if (jwtFromUrl) {
+        saveJwtToStorage(jwtFromUrl);
+
+        if (isJwtValid(jwtFromUrl)) {
+          console.log('Valid JWT from URL found');
+          loadZendeskWidget(jwtFromUrl);
+          return;
+        } else {
+          console.log('Invalid JWT from URL');
+        }
+      }
+
+      const jwtFromStorage = getJwtFromStorage();
+
+      if (jwtFromStorage && isJwtValid(jwtFromStorage)) {
+        console.log('Valid JWT from storage found');
+        loadZendeskWidget(jwtFromStorage);
+        return;
+      }
+
+      console.log('No valid JWT found, loading test chat');
+      loadBotarioWidget();
+    }
+
+    document.addEventListener('DOMContentLoaded', initializeWidget);
+    
+  </script>
+  
+</body>
+
+</html>
