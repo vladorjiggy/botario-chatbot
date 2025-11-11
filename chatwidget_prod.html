@@ -1,0 +1,355 @@
+<div id="widget-container"></div>
+<script>
+    // Error handling utility
+    function logError(context, error, details = {}) {
+        console.error(`[${context}] Error:`, error);
+        if (Object.keys(details).length > 0) {
+            console.error(`[${context}] Details:`, details);
+        }
+    }
+
+    function getUrlParameter(name) {
+        try {
+            if (!name || typeof name !== 'string') {
+                throw new Error('Parameter name must be a non-empty string');
+            }
+            const urlParams = new URLSearchParams(window.location.search);
+            return urlParams.get(name);
+        } catch (error) {
+            logError('getUrlParameter', error, { paramName: name });
+            return null;
+        }
+    }
+
+    function saveJwtToStorage(jwt) {
+        try {
+            if (!jwt || typeof jwt !== 'string') {
+                throw new Error('JWT must be a non-empty string');
+            }
+            if (typeof Storage === 'undefined') {
+                throw new Error('LocalStorage is not supported in this browser');
+            }
+            localStorage.setItem('chat_token', jwt);
+            return true;
+        } catch (error) {
+            logError('saveJwtToStorage', error, { jwt: jwt ? 'provided' : 'missing' });
+            return false;
+        }
+    }
+
+    function getJwtFromStorage() {
+        try {
+            if (typeof Storage === 'undefined') {
+                console.warn('LocalStorage is not supported in this browser');
+                return null;
+            }
+            return localStorage.getItem('chat_token');
+        } catch (error) {
+            logError('getJwtFromStorage', error);
+            return null;
+        }
+    }
+
+    function isJwtValid(jwt) {
+        try {
+            if (!jwt || typeof jwt !== 'string') {
+                return false;
+            }
+
+            const parts = jwt.split('.');
+            if (parts.length !== 3) {
+                throw new Error('JWT must have 3 parts separated by dots');
+            }
+
+            // Decode base64 payload with proper padding
+            let payload = parts[1];
+            // Add padding if necessary
+            while (payload.length % 4) {
+                payload += '=';
+            }
+
+            const decodedPayload = JSON.parse(atob(payload));
+
+            if (!decodedPayload.exp || typeof decodedPayload.exp !== 'number') {
+                console.warn('JWT does not contain valid expiration time');
+                return false;
+            }
+
+            const currentTime = Math.floor(Date.now() / 1000);
+            const isValid = decodedPayload.exp > currentTime;
+
+            return isValid;
+        } catch (error) {
+            logError('isJwtValid', error, { jwtProvided: !!jwt });
+            return false;
+        }
+    }
+
+    function loadZendeskWidget(jwt) {
+        return new Promise((resolve, reject) => {
+            try {
+                if (!jwt) {
+                    throw new Error('JWT is required for Zendesk widget');
+                }
+
+                // Check if Zendesk script is already loaded
+                const existingScript = document.getElementById('ze-snippet');
+                if (existingScript) {
+                    existingScript.remove();
+                }
+
+                const script = document.createElement('script');
+                script.id = 'ze-snippet';
+                script.src = 'https://static.zdassets.com/ekr/snippet.js?key=46408885-a302-4a77-a8f1-0ed67a5ec805';
+
+                // Set timeout for script loading
+                const timeout = setTimeout(() => {
+                    reject(new Error('Zendesk script loading timeout'));
+                }, 10000); // 10 seconds timeout
+
+                script.onload = function () {
+                    clearTimeout(timeout);
+
+                    // Wait for zE to be available
+                    const checkZE = setInterval(() => {
+                        if (typeof zE !== 'undefined') {
+                            clearInterval(checkZE);
+
+                            try {
+                                zE("messenger", "loginUser",
+                                    function jwtCallback(callback) {
+                                        callback(jwt);
+                                        zE('messenger', 'open');
+                                        resolve();
+                                    },
+                                    function loginCallback(error) {
+                                        if (error) {
+                                            const { type, reason, message } = error;
+                                            const errorMsg = `Login failed: ${type} - ${reason} - ${message}`;
+                                            logError('Zendesk Login', new Error(errorMsg), error);
+                                            reject(new Error(errorMsg));
+                                        }
+                                    }
+                                );
+                            } catch (zeError) {
+                                logError('Zendesk zE function', zeError);
+                                reject(zeError);
+                            }
+                        }
+                    }, 100);
+
+                    // Timeout for zE availability
+                    setTimeout(() => {
+                        clearInterval(checkZE);
+                        if (typeof zE === 'undefined') {
+                            reject(new Error('Zendesk zE function not available after timeout'));
+                        }
+                    }, 5000);
+                };
+
+                script.onerror = function (event) {
+                    clearTimeout(timeout);
+                    const error = new Error('Failed to load Zendesk Widget script');
+                    logError('Zendesk Script Loading', error, { event });
+                    reject(error);
+                };
+
+                document.head.appendChild(script);
+            } catch (error) {
+                logError('loadZendeskWidget', error);
+                reject(error);
+            }
+        });
+    }
+
+    function loadBotarioWidget() {
+        return new Promise((resolve, reject) => {
+            try {
+                const container = document.getElementById('widget-container');
+                if (!container) {
+                    throw new Error('Widget container not found');
+                }
+
+                // Clear any existing content
+                container.innerHTML = '';
+
+                // Create botario chat element
+                container.innerHTML = '<botario-chat bot-id="68c039dccf68cc7cca6faf92" api-url="https://gpt.avm.botario.com/static/chat-client/"></botario-chat>';
+
+                // Load main widget script
+                const script = document.createElement('script');
+                script.type = 'module';
+                script.src = 'https://gpt.avm.botario.com/static/chat-widget/chat-widget.js';
+
+                script.onload = function () {
+                    resolve();
+                };
+
+                script.onerror = function (event) {
+                    const error = new Error('Failed to load Botario Widget script');
+                    logError('Botario Script Loading', error, { event });
+                    reject(error);
+                };
+
+                document.head.appendChild(script);
+            } catch (error) {
+                logError('loadBotarioWidget', error);
+                reject(error);
+            }
+        });
+    }
+
+    async function initializeWidget() {
+        try {
+
+            // Check for JWT in URL
+            const jwtFromUrl = getUrlParameter('jwt');
+
+            if (jwtFromUrl) {
+                saveJwtToStorage(jwtFromUrl);
+
+                if (isJwtValid(jwtFromUrl)) {
+                    try {
+                        await loadZendeskWidget(jwtFromUrl);
+                        return;
+                    } catch (error) {
+                        logError('Zendesk Widget Fallback', error);
+                    }
+                }
+            }
+
+            // Check for JWT in storage
+            const jwtFromStorage = getJwtFromStorage();
+
+            if (jwtFromStorage && isJwtValid(jwtFromStorage)) {
+                try {
+                    await loadZendeskWidget(jwtFromStorage);
+                    return;
+                } catch (error) {
+                    logError('Zendesk Widget Fallback', error);
+                }
+            }
+
+            // Fallback to Botario widget
+            setTimeout(async () => {
+                await loadBotarioWidget();
+            }, 4000);
+
+        } catch (error) {
+            logError('Widget Initialization', error);
+            console.error('Failed to initialize any widget. Please refresh the page.');
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initializeWidget);
+    } else {
+        initializeWidget();
+    }
+
+</script>
+<script>
+    // CSS als String definieren
+    const customCSS = `
+        #chat-container {
+            z-index: 99999 !important;
+        }
+        app-chat-header img{
+            background-color: transparent !important;
+        }
+    `;
+
+    // Funktion zum Einfügen von CSS in Shadow DOM
+    function injectCSSIntoShadowRoot(shadowRoot, cssString) {
+        try {
+            // Prüfen ob bereits injiziert
+            if (shadowRoot.querySelector('#custom-chat-styles')) {
+                return;
+            }
+
+            const style = document.createElement('style');
+            style.id = 'custom-chat-styles';
+            style.textContent = cssString;
+            shadowRoot.appendChild(style);
+            
+            console.log('Custom CSS successfully injected into Shadow DOM');
+        } catch (error) {
+            console.error('Failed to inject CSS into Shadow DOM:', error);
+        }
+    }
+
+    // Funktion zum Verarbeiten des Chat Elements
+    function processChatElement() {
+        const chatElement = document.querySelector('botario-chat');
+
+        if (chatElement && chatElement.shadowRoot) {
+            const shadowRoot = chatElement.shadowRoot;
+
+            // CSS in Shadow DOM einfügen
+            injectCSSIntoShadowRoot(shadowRoot, customCSS);
+
+            // Direkt prüfen, ob schon vorhanden
+            let container = shadowRoot.querySelector('#chat-container');
+            let chatBadge = shadowRoot.querySelector('#chat-badge');
+
+            if (chatBadge) {
+                chatBadge.click();
+            }
+
+            if (!container || !chatBadge) {
+                // Sonst auf spätere Mutationen warten
+                const observer = new MutationObserver((mutations, obs) => {
+                    // CSS bei jeder Mutation neu injizieren (falls DOM neu aufgebaut wird)
+                    injectCSSIntoShadowRoot(shadowRoot, customCSS);
+
+
+                    if (!chatBadge) {
+                        chatBadge = shadowRoot.querySelector('#chat-badge');
+                        if (chatBadge) {
+                            chatBadge.click();
+                        }
+                    }
+
+                    // Beobachtung stoppen wenn beide Elemente gefunden wurden
+                    if (container && chatBadge) {
+                        obs.disconnect();
+                    }
+                });
+
+                observer.observe(shadowRoot, { childList: true, subtree: true });
+            }
+        } else {
+
+            // Kombiniere MutationObserver mit Polling als Fallback
+            const chatObserver = new MutationObserver((mutations, obs) => {
+                const chatElement = document.querySelector('botario-chat');
+                if (chatElement && chatElement.shadowRoot) {
+                    obs.disconnect();
+                    clearInterval(pollInterval);
+                    setTimeout(processChatElement, 100);
+                }
+            });
+
+            chatObserver.observe(document.getElementById('widget-container') || document.body, { childList: true, subtree: true });
+
+            // Zusätzlich Polling als Fallback
+            const pollInterval = setInterval(() => {
+                const chatElement = document.querySelector('botario-chat');
+                if (chatElement && chatElement.shadowRoot) {
+                    chatObserver.disconnect();
+                    clearInterval(pollInterval);
+                    setTimeout(processChatElement, 100);
+                }
+            }, 500);
+
+            // Nach 20 Sekunden aufgeben
+            setTimeout(() => {
+                chatObserver.disconnect();
+                clearInterval(pollInterval);
+            }, 20000);
+        }
+    }
+
+    // Sofort ausführen
+    processChatElement();
+</script>
